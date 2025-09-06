@@ -11,10 +11,10 @@ import (
 
 type Engine struct {
 	cronSched  *cron.Cron
-	loaders    map[string]DataLoader
-	renderers  map[string]TemplateRenderer
-	outputs    map[string]OutputGenerator
-	deliveries map[string]DeliveryAdapter
+	Loaders    map[string]DataLoader
+	Renderers  map[string]TemplateRenderer
+	Outputs    map[string]OutputGenerator
+	Deliveries map[string]DeliveryAdapter
 
 	jobQueue chan ReportJob
 	workers  int
@@ -24,10 +24,10 @@ type Engine struct {
 func NewEngine(workers int) *Engine {
 	e := &Engine{
 		cronSched:  cron.New(cron.WithSeconds()),
-		loaders:    map[string]DataLoader{},
-		renderers:  map[string]TemplateRenderer{},
-		outputs:    map[string]OutputGenerator{},
-		deliveries: map[string]DeliveryAdapter{},
+		Loaders:    map[string]DataLoader{},
+		Renderers:  map[string]TemplateRenderer{},
+		Outputs:    map[string]OutputGenerator{},
+		Deliveries: map[string]DeliveryAdapter{},
 		jobQueue:   make(chan ReportJob, 100),
 		workers:    workers,
 		stopCh:     make(chan struct{}),
@@ -37,16 +37,16 @@ func NewEngine(workers int) *Engine {
 
 // Register helpers:
 func (e *Engine) RegisterLoader(name string, d DataLoader) {
-	e.loaders[name] = d
+	e.Loaders[name] = d
 }
 func (e *Engine) RegisterRenderer(name string, r TemplateRenderer) {
-	e.renderers[name] = r
+	e.Renderers[name] = r
 }
 func (e *Engine) RegisterOutput(name string, o OutputGenerator) {
-	e.outputs[name] = o
+	e.Outputs[name] = o
 }
 func (e *Engine) RegisterDelivery(name string, d DeliveryAdapter) {
-	e.deliveries[name] = d
+	e.Deliveries[name] = d
 }
 
 // Start scheduler/workers
@@ -98,7 +98,7 @@ func (e *Engine) workerLoop(id int) {
 func (e *Engine) execute(ctx context.Context, job ReportJob) error {
 	// 1. find loader (based on type in DataSource)
 	dsType := job.DataSource["type"]
-	loader, ok := e.loaders[dsType]
+	loader, ok := e.Loaders[dsType]
 	if !ok {
 		return fmt.Errorf("no loader for type %s", dsType)
 	}
@@ -110,7 +110,7 @@ func (e *Engine) execute(ctx context.Context, job ReportJob) error {
 	}
 
 	// 3. render (pick renderer from template type; we'll assume "markdown")
-	renderer := e.renderers["markdown"]
+	renderer := e.Renderers["markdown"]
 	rendered, err := renderer.Render(ctx, job.TemplatePath, data)
 	if err != nil {
 		return err
@@ -119,7 +119,7 @@ func (e *Engine) execute(ctx context.Context, job ReportJob) error {
 	// 4. outputs
 	var files []OutputFile
 	for _, fmtName := range job.Outputs {
-		outGen, ok := e.outputs[fmtName]
+		outGen, ok := e.Outputs[fmtName]
 		if !ok {
 			return fmt.Errorf("no output generator for %s", fmtName)
 		}
@@ -133,7 +133,7 @@ func (e *Engine) execute(ctx context.Context, job ReportJob) error {
 	// 5. delivery
 	for _, dCfg := range job.Delivery {
 		dtype := dCfg["type"]
-		adapter, ok := e.deliveries[dtype]
+		adapter, ok := e.Deliveries[dtype]
 		if !ok {
 			return fmt.Errorf("no delivery adapter for %s", dtype)
 		}
@@ -143,4 +143,30 @@ func (e *Engine) execute(ctx context.Context, job ReportJob) error {
 	}
 
 	return nil
+}
+
+func (e *Engine) GetLoaders() map[string]DataLoader {
+	return e.Loaders
+}
+
+func (e *Engine) GetRenderers() map[string]TemplateRenderer {
+	return e.Renderers
+}
+
+func (e *Engine) GetOutputs() map[string]OutputGenerator {
+	return e.Outputs
+}
+
+func (e *Engine) GetDeliveries() map[string]DeliveryAdapter {
+	return e.Deliveries
+}
+
+func (e *Engine) TestExecute(ctx context.Context, job ReportJob) error {
+	fmt.Printf("=== Executing job: %s ===\n", job.Name)
+
+	// Add timeout to context
+	ctx, cancel := context.WithTimeout(ctx, job.Timeout)
+	defer cancel()
+
+	return e.execute(ctx, job)
 }

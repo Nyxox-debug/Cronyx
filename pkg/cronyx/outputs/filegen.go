@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/Nyxox-debug/Cronyx/pkg/cronyx"
 	"io/ioutil"
+	"os"
 	"path/filepath"
 	"time"
 )
@@ -14,20 +15,37 @@ type FileOutputGenerator struct {
 }
 
 func (g FileOutputGenerator) Generate(ctx context.Context, r cronyx.RenderedDoc, format string) (cronyx.OutputFile, error) {
-	// For "html" we simply write to file. PDF / XLSX would need additional pipelines.
-	filename := fmt.Sprintf("%d.%s", time.Now().Unix(), format)
+	// Create output directory if it doesn't exist
+	if err := os.MkdirAll(g.OutDir, 0755); err != nil {
+		return cronyx.OutputFile{}, fmt.Errorf("failed to create output directory: %w", err)
+	}
+
+	// Generate filename with timestamp
+	timestamp := time.Now().Format("20060102_150405")
+	filename := fmt.Sprintf("report_%s.%s", timestamp, format)
 	outPath := filepath.Join(g.OutDir, filename)
+
 	var data []byte
-	if format == "html" {
+	switch format {
+	case "html":
 		data = []byte(r.HTML)
-	} else if format == "pdf" {
-		// placeholder — in prod call a PDF generator (chromedp or wkhtmltopdf)
-		data = []byte(r.HTML) // placeholder
-	} else {
+	case "pdf":
+		// Placeholder - in production, use a PDF generator
+		data = []byte(r.HTML)
+	case "md":
+		// Extract original markdown if available, otherwise convert HTML back
+		data = []byte(r.HTML)
+	default:
 		data = []byte(r.HTML)
 	}
+
 	if err := ioutil.WriteFile(outPath, data, 0644); err != nil {
-		return cronyx.OutputFile{}, err
+		return cronyx.OutputFile{}, fmt.Errorf("failed to write output file: %w", err)
 	}
-	return cronyx.OutputFile{Name: filename, Path: outPath, Data: data}, nil
+
+	return cronyx.OutputFile{
+		Name: filename,
+		Path: outPath,
+		Data: data,
+	}, nil
 }

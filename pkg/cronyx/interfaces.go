@@ -31,8 +31,9 @@ type DataPayload struct {
 }
 
 type RenderedDoc struct {
-	HTML string // for HTML→PDF pipelines
-	Meta map[string]interface{}
+	HTML    string                 // for HTML→PDF pipelines
+	Content string                 // raw content
+	Meta    map[string]interface{} // metadata
 }
 
 type OutputFile struct {
