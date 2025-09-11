@@ -39,12 +39,15 @@ func NewEngine(workers int) *Engine {
 func (e *Engine) RegisterLoader(name string, d DataLoader) {
 	e.Loaders[name] = d
 }
+
 func (e *Engine) RegisterRenderer(name string, r TemplateRenderer) {
 	e.Renderers[name] = r
 }
+
 func (e *Engine) RegisterOutput(name string, o OutputGenerator) {
 	e.Outputs[name] = o
 }
+
 func (e *Engine) RegisterDelivery(name string, d DeliveryAdapter) {
 	e.Deliveries[name] = d
 }

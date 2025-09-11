@@ -18,6 +18,7 @@ func main() {
 	eng := cronyx.NewEngine(4)
 
 	// Register components
+	// NOTE: Add other methods
 	eng.RegisterLoader("csv", loader.CSVLoader{})
 	eng.RegisterRenderer("markdown", render.MarkdownRenderer{})
 	eng.RegisterOutput("html", generate.FileOutputGenerator{OutDir: "./out"})
