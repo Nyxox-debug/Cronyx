@@ -29,108 +29,7 @@ Project structure
 
 12 directories, 15 files
 
-main.go
-
-package main
-
-import (
-	"context"
-	"fmt"
-	"time"
-
-	cronyx "github.com/Nyxox-debug/Cronyx/pkg/cronyx"
-	deliver "github.com/Nyxox-debug/Cronyx/pkg/cronyx/delivery"
-	loader "github.com/Nyxox-debug/Cronyx/pkg/cronyx/loaders"
-	generate "github.com/Nyxox-debug/Cronyx/pkg/cronyx/outputs"
-	render "github.com/Nyxox-debug/Cronyx/pkg/cronyx/renderers"
-)
-
-func main() {
-	eng := cronyx.NewEngine(4)
-	eng.RegisterLoader("csv", loader.CSVLoader{})
-	eng.RegisterRenderer("markdown", render.MarkdownRenderer{})
-	eng.RegisterOutput("html", generate.FileOutputGenerator{OutDir: "./out"})
-	eng.RegisterDelivery("console", deliver.ConsoleDelivery{})
-
-	job := cronyx.ReportJob{
-		ID:           "job1",
-		Name:         "daily-sample",
-		TemplatePath: "sample.md",
-		DataSource:   cronyx.DataSourceConfig{"type": "csv", "path": "data.csv"},
-		Outputs:      []string{"html"},
-		Schedule:     "@every 10s",
-		Delivery:     []cronyx.DeliveryConfig{{"type": "console"}},
-		Timeout:      30 * time.Second,
-	}
-
-	// Wrap the engine execute function to add debug prints
-	debugExecute := func(ctx context.Context, job cronyx.ReportJob) error {
-		fmt.Println("=== Starting job:", job.Name, "===")
-
-		// 1. Load data
-		dsType := job.DataSource["type"]
-		loader, ok := eng.Loaders()[dsType]
-		if !ok {
-			return fmt.Errorf("no loader for type %s", dsType)
-		}
-		data, err := loader.Load(ctx, job.DataSource)
-		if err != nil {
-			fmt.Println("Error loading data:", err)
-			return err
-		}
-		fmt.Println("Loaded data rows:", len(data.Rows))
-		for i, row := range data.Rows {
-			fmt.Printf("Row %d: %+v\n", i, row)
-		}
-
-		// 2. Render
-		renderer := eng.Renderers()["markdown"]
-		rendered, err := renderer.Render(ctx, job.TemplatePath, data)
-		if err != nil {
-			fmt.Println("Error rendering template:", err)
-			return err
-		}
-		fmt.Println("Rendered content:\n", rendered.Content)
-
-		// 3. Outputs
-		for _, fmtName := range job.Outputs {
-			outGen := eng.Outputs()[fmtName]
-			file, err := outGen.Generate(ctx, rendered, fmtName)
-			if err != nil {
-				fmt.Println("Error generating output:", err)
-				return err
-			}
-			fmt.Println("Generated output file:", file.Path)
-		}
-
-		// 4. Delivery
-		for _, dCfg := range job.Delivery {
-			dtype := dCfg["type"]
-			adapter := eng.Deliveries()[dtype]
-			if err := adapter.Deliver(ctx, dCfg, nil); err != nil {
-				fmt.Println("Error delivering:", err)
-				return err
-			}
-			fmt.Println("Delivered via:", dtype)
-		}
-
-		fmt.Println("=== Job finished ===\n")
-		return nil
-	}
-
-	// Enqueue job manually for immediate testing
-	ctx := context.Background()
-	debugExecute(ctx, job)
-
-	// Start cron normally if you want recurring execution
-	eng.AddCronJob(job)
-	eng.Start()
-
-	time.Sleep(1 * time.Minute)
-	eng.Stop()
-}
-
-engine.go
+engine.go 
 
 package cronyx
 
@@ -173,12 +72,15 @@ func NewEngine(workers int) *Engine {
 func (e *Engine) RegisterLoader(name string, d DataLoader) {
 	e.Loaders[name] = d
 }
+
 func (e *Engine) RegisterRenderer(name string, r TemplateRenderer) {
 	e.Renderers[name] = r
 }
+
 func (e *Engine) RegisterOutput(name string, o OutputGenerator) {
 	e.Outputs[name] = o
 }
+
 func (e *Engine) RegisterDelivery(name string, d DeliveryAdapter) {
 	e.Deliveries[name] = d
 }
@@ -279,7 +181,33 @@ func (e *Engine) execute(ctx context.Context, job ReportJob) error {
 	return nil
 }
 
-interfaces.go
+func (e *Engine) GetLoaders() map[string]DataLoader {
+	return e.Loaders
+}
+
+func (e *Engine) GetRenderers() map[string]TemplateRenderer {
+	return e.Renderers
+}
+
+func (e *Engine) GetOutputs() map[string]OutputGenerator {
+	return e.Outputs
+}
+
+func (e *Engine) GetDeliveries() map[string]DeliveryAdapter {
+	return e.Deliveries
+}
+
+func (e *Engine) TestExecute(ctx context.Context, job ReportJob) error {
+	fmt.Printf("=== Executing job: %s ===\n", job.Name)
+
+	// Add timeout to context
+	ctx, cancel := context.WithTimeout(ctx, job.Timeout)
+	defer cancel()
+
+	return e.execute(ctx, job)
+}
+
+interfaces.go 
 
 package cronyx
 
@@ -314,8 +242,9 @@ type DataPayload struct {
 }
 
 type RenderedDoc struct {
-	HTML string // for HTML→PDF pipelines
-	Meta map[string]interface{}
+	HTML    string                 // for HTML→PDF pipelines
+	Content string                 // raw content
+	Meta    map[string]interface{} // metadata
 }
 
 type OutputFile struct {
@@ -324,7 +253,7 @@ type OutputFile struct {
 	Data []byte // optional
 }
 
-job.go
+job.go 
 
 package cronyx
 
@@ -347,27 +276,30 @@ type DataSourceConfig map[string]string
 
 type DeliveryConfig map[string]string
 
-console.go
+console.go 
 
-package delivery
+package cronyx
 
-import (
-	"context"
-	"fmt"
-	"github.com/Nyxox-debug/Cronyx/pkg/cronyx"
-)
+import "time"
 
-type ConsoleDelivery struct{}
-
-func (ConsoleDelivery) Deliver(ctx context.Context, target cronyx.DeliveryConfig, files []cronyx.OutputFile) error {
-	for _, f := range files {
-		fmt.Printf("[Cronyx] Delivered file: %s (%s)\n", f.Name, f.Path)
-	}
-	return nil
+type ReportJob struct {
+	ID           string
+	Name         string
+	TemplatePath string
+	DataSource   DataSourceConfig
+	Outputs      []string
+	Schedule     string
+	Delivery     []DeliveryConfig
+	Timeout      time.Duration
+	Labels       map[string]string
 }
 
-csv.go
+// DataSourceConfig is generic; specific loaders will parse it.
+type DataSourceConfig map[string]string
 
+type DeliveryConfig map[string]string
+
+csv.go 
 
 package loaders
 
@@ -412,8 +344,7 @@ func (c CSVLoader) Load(ctx context.Context, cfg cronyx.DataSourceConfig) (crony
 	return cronyx.DataPayload{Rows: rows}, nil
 }
 
-filegen.go
-
+filegen.go 
 
 package outputs
 
@@ -422,6 +353,7 @@ import (
 	"fmt"
 	"github.com/Nyxox-debug/Cronyx/pkg/cronyx"
 	"io/ioutil"
+	"os"
 	"path/filepath"
 	"time"
 )
@@ -431,33 +363,54 @@ type FileOutputGenerator struct {
 }
 
 func (g FileOutputGenerator) Generate(ctx context.Context, r cronyx.RenderedDoc, format string) (cronyx.OutputFile, error) {
-	// For "html" we simply write to file. PDF / XLSX would need additional pipelines.
-	filename := fmt.Sprintf("%d.%s", time.Now().Unix(), format)
+	// Create output directory if it doesn't exist
+	if err := os.MkdirAll(g.OutDir, 0755); err != nil {
+		return cronyx.OutputFile{}, fmt.Errorf("failed to create output directory: %w", err)
+	}
+
+	// Generate filename with timestamp
+	timestamp := time.Now().Format("20060102_150405")
+	filename := fmt.Sprintf("report_%s.%s", timestamp, format)
 	outPath := filepath.Join(g.OutDir, filename)
+
 	var data []byte
-	if format == "html" {
+	switch format {
+	case "html":
 		data = []byte(r.HTML)
-	} else if format == "pdf" {
-		// placeholder — in prod call a PDF generator (chromedp or wkhtmltopdf)
-		data = []byte(r.HTML) // placeholder
-	} else {
+	case "pdf":
+		// Placeholder - in production, use a PDF generator
+		data = []byte(r.HTML)
+	case "md":
+		// Extract original markdown if available, otherwise convert HTML back
+		data = []byte(r.HTML)
+	default:
 		data = []byte(r.HTML)
 	}
+
 	if err := ioutil.WriteFile(outPath, data, 0644); err != nil {
-		return cronyx.OutputFile{}, err
+		return cronyx.OutputFile{}, fmt.Errorf("failed to write output file: %w", err)
 	}
-	return cronyx.OutputFile{Name: filename, Path: outPath, Data: data}, nil
+
+	return cronyx.OutputFile{
+		Name: filename,
+		Path: outPath,
+		Data: data,
+	}, nil
 }
 
-markdown.go
 
+markdown.go 
 
 package renderers
 
 import (
+	"bytes"
 	"context"
+	"fmt"
 	"github.com/Nyxox-debug/Cronyx/pkg/cronyx"
 	"io/ioutil"
+	_ "strings"
+	"text/template"
 
 	bf "github.com/russross/blackfriday/v2"
 )
@@ -465,14 +418,131 @@ import (
 type MarkdownRenderer struct{}
 
 func (MarkdownRenderer) Render(ctx context.Context, tplPath string, data cronyx.DataPayload) (cronyx.RenderedDoc, error) {
-	// Minimal: read template markdown and do naive replacement for keys in data[0]
+	// Read template file
 	b, err := ioutil.ReadFile(tplPath)
 	if err != nil {
-		return cronyx.RenderedDoc{}, err
+		return cronyx.RenderedDoc{}, fmt.Errorf("failed to read template: %w", err)
 	}
-	md := string(b)
-	// naive templating — you should replace with a proper templating engine (text/template or pongo2)
-	// For demo, we just render markdown as-is.
-	html := string(bf.Run([]byte(md)))
-	return cronyx.RenderedDoc{HTML: html}, nil
+
+	// Create template
+	tmpl, err := template.New("report").Parse(string(b))
+	if err != nil {
+		return cronyx.RenderedDoc{}, fmt.Errorf("failed to parse template: %w", err)
+	}
+
+	// Prepare template data
+	templateData := map[string]interface{}{
+		"Rows": data.Rows,
+		"Data": data.Rows, // alias for convenience
+	}
+
+	// Execute template
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, templateData); err != nil {
+		return cronyx.RenderedDoc{}, fmt.Errorf("failed to execute template: %w", err)
+	}
+
+	// Convert markdown to HTML
+	html := string(bf.Run(buf.Bytes()))
+
+	return cronyx.RenderedDoc{
+		HTML: html,
+		Meta: map[string]interface{}{
+			"source":     tplPath,
+			"rows_count": len(data.Rows),
+		},
+	}, nil
 }
+
+
+data.csv 
+
+name,value,category
+Product A,150,Electronics
+Product B,200,Clothing
+Product C,75,Books
+Product D,300,Electronics
+
+embed-example main.go 
+
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"time"
+
+	cronyx "github.com/Nyxox-debug/Cronyx/pkg/cronyx"
+	deliver "github.com/Nyxox-debug/Cronyx/pkg/cronyx/delivery"
+	loader "github.com/Nyxox-debug/Cronyx/pkg/cronyx/loaders"
+	generate "github.com/Nyxox-debug/Cronyx/pkg/cronyx/outputs"
+	render "github.com/Nyxox-debug/Cronyx/pkg/cronyx/renderers"
+)
+
+func main() {
+	// Create engine with 4 workers
+	eng := cronyx.NewEngine(4)
+
+	// Register components
+	// NOTE: Add other methods
+	eng.RegisterLoader("csv", loader.CSVLoader{})
+	eng.RegisterRenderer("markdown", render.MarkdownRenderer{})
+	eng.RegisterOutput("html", generate.FileOutputGenerator{OutDir: "./out"})
+	eng.RegisterDelivery("console", deliver.ConsoleDelivery{})
+
+	// Define job
+	job := cronyx.ReportJob{
+		ID:           "job1",
+		Name:         "daily-sample",
+		TemplatePath: "sample.md",
+		DataSource:   cronyx.DataSourceConfig{"type": "csv", "path": "data.csv"},
+		Outputs:      []string{"html"},
+		Schedule:     "@every 10s",
+		Delivery:     []cronyx.DeliveryConfig{{"type": "console"}},
+		Timeout:      30 * time.Second,
+	}
+
+	// Test job execution once
+	fmt.Println("=== Testing job execution ===")
+	ctx := context.Background()
+	if err := eng.TestExecute(ctx, job); err != nil {
+		log.Printf("Job execution failed: %v", err)
+		return
+	}
+
+	// Add to cron scheduler
+	if err := eng.AddCronJob(job); err != nil {
+		log.Printf("Failed to add cron job: %v", err)
+		return
+	}
+
+	// Start engine
+	fmt.Println("Starting Cronyx engine...")
+	eng.Start()
+
+	// Run for 1 minute then stop
+	time.Sleep(1 * time.Minute)
+
+	fmt.Println("Stopping engine...")
+	eng.Stop()
+}
+
+sample.md 
+
+# Daily Report
+
+Generated on: {{.Meta.timestamp}}
+
+## Data Summary
+
+Total records: {{len .Rows}}
+
+{{range .Rows}}
+
+- **{{.name}}**: {{.value}}
+  {{end}}
+
+## Additional Information
+
+This report was generated automatically by Cronyx.

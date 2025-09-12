@@ -4,11 +4,11 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"github.com/Nyxox-debug/Cronyx/pkg/cronyx"
 	"io/ioutil"
-	_ "strings"
 	"text/template"
+	"time"
 
+	"github.com/Nyxox-debug/Cronyx/pkg/cronyx"
 	bf "github.com/russross/blackfriday/v2"
 )
 
@@ -21,16 +21,30 @@ func (MarkdownRenderer) Render(ctx context.Context, tplPath string, data cronyx.
 		return cronyx.RenderedDoc{}, fmt.Errorf("failed to read template: %w", err)
 	}
 
-	// Create template
-	tmpl, err := template.New("report").Parse(string(b))
+	// Create template with custom functions
+	tmpl, err := template.New("report").Funcs(template.FuncMap{
+		"len": func(slice interface{}) int {
+			switch v := slice.(type) {
+			case []map[string]interface{}:
+				return len(v)
+			default:
+				return 0
+			}
+		},
+	}).Parse(string(b))
 	if err != nil {
 		return cronyx.RenderedDoc{}, fmt.Errorf("failed to parse template: %w", err)
 	}
 
-	// Prepare template data
+	// Prepare template data with metadata
 	templateData := map[string]interface{}{
 		"Rows": data.Rows,
 		"Data": data.Rows, // alias for convenience
+		"Meta": map[string]interface{}{
+			"timestamp":  time.Now().Format("2006-01-02 15:04:05"),
+			"rows_count": len(data.Rows),
+			"source":     tplPath,
+		},
 	}
 
 	// Execute template
@@ -43,10 +57,12 @@ func (MarkdownRenderer) Render(ctx context.Context, tplPath string, data cronyx.
 	html := string(bf.Run(buf.Bytes()))
 
 	return cronyx.RenderedDoc{
-		HTML: html,
+		HTML:    html,
+		Content: buf.String(), // Store original markdown too
 		Meta: map[string]interface{}{
 			"source":     tplPath,
 			"rows_count": len(data.Rows),
+			"timestamp":  time.Now().Format("2006-01-02 15:04:05"),
 		},
 	}, nil
 }
