@@ -10,7 +10,7 @@ A flexible, developer-friendly Go package for automated report generation and sc
 
 - **🔌 Plugin Architecture**: Easily extensible with custom data loaders, renderers, outputs, and delivery methods
 - **⏰ Cron Scheduling**: Built-in cron scheduler with flexible scheduling options
-- **🏗️ Builder Pattern**: Fluent API for creating jobs with sensible defaults
+- **🏗️ Flexible Job Definition**: Simple struct-based job configuration with sensible defaults
 - **🔄 Worker Pool**: Concurrent job execution with configurable workers
 - **📊 Metrics**: Optional job execution metrics and monitoring
 - **🎯 Context Support**: Full context support for timeouts and cancellation
@@ -31,46 +31,63 @@ go get github.com/Nyxox-debug/Cronyx
 package main
 
 import (
-    "context"
-    "log"
-    "time"
+	"context"
+	"fmt"
+	"log"
+	"time"
 
-    "github.com/Nyxox-debug/Cronyx/pkg/cronyx"
-    "github.com/Nyxox-debug/Cronyx/pkg/cronyx/loaders"
-    "github.com/Nyxox-debug/Cronyx/pkg/cronyx/renderers"
-    "github.com/Nyxox-debug/Cronyx/pkg/cronyx/outputs"
-    "github.com/Nyxox-debug/Cronyx/pkg/cronyx/delivery"
+	cronyx "github.com/Nyxox-debug/Cronyx/pkg/cronyx"
+	deliver "github.com/Nyxox-debug/Cronyx/pkg/cronyx/delivery"
+	loader "github.com/Nyxox-debug/Cronyx/pkg/cronyx/loaders"
+	generate "github.com/Nyxox-debug/Cronyx/pkg/cronyx/outputs"
+	render "github.com/Nyxox-debug/Cronyx/pkg/cronyx/renderers"
 )
 
 func main() {
-    // Create and configure engine
-    engine := cronyx.NewEngine().
-        WithLoader("csv", &loaders.CSVLoader{}).
-        WithRenderer("markdown", &renderers.MarkdownRenderer{}).
-        WithOutput("html", &outputs.FileOutputGenerator{OutDir: "./reports"}).
-        WithDelivery("console", &delivery.ConsoleDelivery{})
+	// Create engine with 4 workers
+	eng := cronyx.NewEngine(4)
 
-    // Create a daily report job
-    job, err := cronyx.DailyReport("Sales Report").
-        WithTemplate("templates/sales.md").
-        WithCSVData("data/sales.csv").
-        OutputHTML().
-        DeliverToConsole().
-        Build()
+	// Register components
+	eng.RegisterLoader("csv", loader.CSVLoader{})
+	eng.RegisterRenderer("markdown", render.MarkdownRenderer{})
+	eng.RegisterOutput("html", generate.FileOutputGenerator{OutDir: "./out"})
+	eng.RegisterDelivery("console", deliver.ConsoleDelivery{})
 
-    if err != nil {
-        log.Fatal(err)
-    }
+	// Define job using struct literal
+	job := cronyx.ReportJob{
+		ID:           "job1",
+		Name:         "daily-sample",
+		TemplatePath: "sample.md",
+		DataSource:   cronyx.DataSourceConfig{"type": "csv", "path": "data.csv"},
+		Outputs:      []string{"html"},
+		Schedule:     "@every 10s",
+		Delivery:     []cronyx.DeliveryConfig{{"type": "console"}},
+		Timeout:      30 * time.Second,
+	}
 
-    // Start the engine
-    engine.Start()
-    defer engine.Stop()
+	// Test job execution once
+	fmt.Println("=== Testing job execution ===")
+	ctx := context.Background()
+	if err := eng.TestExecute(ctx, job); err != nil {
+		log.Printf("Job execution failed: %v", err)
+		return
+	}
 
-    // Schedule the job
-    engine.ScheduleJob(job)
+	// Add to cron scheduler
+	if err := eng.AddCronJob(job); err != nil {
+		log.Printf("Failed to add cron job: %v", err)
+		return
+	}
 
-    // Keep running
-    select {}
+	// Start engine
+	fmt.Println("Starting Cronyx engine...")
+	eng.Start()
+
+	// Run for 1 minute then stop
+	time.Sleep(1 * time.Minute)
+
+	fmt.Println("Stopping engine...")
+	eng.Stop()
 }
 ```
 
@@ -91,40 +108,65 @@ Define what data to load, how to render it, what outputs to generate, and where 
 - **Outputs**: Generate final files (HTML, PDF, Excel, CSV)
 - **Delivery**: Send results to destinations (email, Slack, S3, console)
 
-## 🏗️ Builder Pattern
+## 🏗️ Job Configuration
 
-The builder pattern makes creating jobs intuitive and type-safe:
+Jobs are defined using the `ReportJob` struct with flexible configuration options:
 
 ```go
-// Daily report
-daily, err := cronyx.DailyReport("Daily Analytics").
-    WithTemplate("templates/analytics.md").
-    WithDatabaseData("postgres://...", "SELECT * FROM analytics").
-    OutputHTML().
-    OutputPDF().
-    DeliverToEmail("team@company.com", "Daily Analytics Report").
-    DeliverToSlack("webhook-url", "#reports").
-    WithTimeout(time.Minute * 5).
-    WithLabel("priority", "high").
-    Build()
+// Daily report example
+dailyJob := cronyx.ReportJob{
+	ID:           "daily-analytics",
+	Name:         "Daily Analytics Report",
+	TemplatePath: "templates/analytics.md",
+	DataSource: cronyx.DataSourceConfig{
+		"type": "database",
+		"connection": "postgres://user:pass@localhost/db",
+		"query": "SELECT * FROM analytics WHERE date = CURRENT_DATE",
+	},
+	Outputs:  []string{"html", "pdf"},
+	Schedule: "0 9 * * *", // 9 AM daily
+	Delivery: []cronyx.DeliveryConfig{
+		{"type": "email", "to": "team@company.com", "subject": "Daily Analytics Report"},
+		{"type": "slack", "webhook": "webhook-url", "channel": "#reports"},
+	},
+	Timeout: 5 * time.Minute,
+	Labels:  map[string]string{"priority": "high", "team": "analytics"},
+}
 
-// Weekly report
-weekly, err := cronyx.WeeklyReport("Weekly Summary").
-    WithTemplate("templates/summary.md").
-    WithJSONData("data/weekly.json").
-    OutputExcel().
-    ScheduleWeekly(time.Friday, 17, 0). // Friday 5 PM
-    DeliverToS3("reports-bucket", "weekly/").
-    Build()
+// Weekly report example
+weeklyJob := cronyx.ReportJob{
+	ID:           "weekly-summary",
+	Name:         "Weekly Summary",
+	TemplatePath: "templates/summary.md",
+	DataSource: cronyx.DataSourceConfig{
+		"type": "json",
+		"path": "data/weekly.json",
+	},
+	Outputs:  []string{"excel"},
+	Schedule: "0 17 * * 5", // Friday 5 PM
+	Delivery: []cronyx.DeliveryConfig{
+		{"type": "s3", "bucket": "reports-bucket", "prefix": "weekly/"},
+	},
+	Timeout: 2 * time.Minute,
+}
 
-// Custom schedule
-custom, err := cronyx.NewJob("Hourly Metrics").
-    WithTemplate("templates/metrics.md").
-    WithAPIData("https://api.example.com/metrics").
-    OutputHTML().
-    ScheduleEvery(time.Hour).
-    DeliverToConsole().
-    Build()
+// Custom schedule example
+hourlyJob := cronyx.ReportJob{
+	ID:           "hourly-metrics",
+	Name:         "Hourly Metrics",
+	TemplatePath: "templates/metrics.md",
+	DataSource: cronyx.DataSourceConfig{
+		"type": "http",
+		"url": "https://api.example.com/metrics",
+		"headers": map[string]string{"Authorization": "Bearer token"},
+	},
+	Outputs:  []string{"html"},
+	Schedule: "0 * * * *", // Every hour
+	Delivery: []cronyx.DeliveryConfig{
+		{"type": "console"},
+	},
+	Timeout: 30 * time.Second,
+}
 ```
 
 ## 🔧 Configuration
@@ -146,9 +188,29 @@ engine := cronyx.NewEngineWithConfig(config)
 ### Loaders
 
 - **CSV**: Load data from CSV files
+  ```go
+  DataSource: cronyx.DataSourceConfig{"type": "csv", "path": "data.csv"}
+  ```
 - **JSON**: Load data from JSON files
+  ```go
+  DataSource: cronyx.DataSourceConfig{"type": "json", "path": "data.json"}
+  ```
 - **Database**: Load data from SQL databases
+  ```go
+  DataSource: cronyx.DataSourceConfig{
+      "type": "database",
+      "connection": "postgres://user:pass@localhost/db",
+      "query": "SELECT * FROM table",
+  }
+  ```
 - **HTTP**: Load data from REST APIs
+  ```go
+  DataSource: cronyx.DataSourceConfig{
+      "type": "http",
+      "url": "https://api.example.com/data",
+      "headers": map[string]string{"Authorization": "Bearer token"},
+  }
+  ```
 
 ### Renderers
 
@@ -165,10 +227,38 @@ engine := cronyx.NewEngineWithConfig(config)
 ### Delivery
 
 - **Console**: Print to console/logs
+  ```go
+  Delivery: []cronyx.DeliveryConfig{{"type": "console"}}
+  ```
 - **Email**: Send via SMTP
+  ```go
+  Delivery: []cronyx.DeliveryConfig{{
+      "type": "email",
+      "to": "recipient@example.com",
+      "subject": "Report Title",
+      "smtp_host": "smtp.gmail.com",
+      "smtp_port": "587",
+      "username": "sender@gmail.com",
+      "password": "password",
+  }}
+  ```
 - **Slack**: Post to Slack channels
+  ```go
+  Delivery: []cronyx.DeliveryConfig{{
+      "type": "slack",
+      "webhook": "https://hooks.slack.com/...",
+      "channel": "#reports",
+  }}
+  ```
 - **S3**: Upload to Amazon S3
-- **File System**: Save to local/network drives
+  ```go
+  Delivery: []cronyx.DeliveryConfig{{
+      "type": "s3",
+      "bucket": "my-reports-bucket",
+      "prefix": "reports/",
+      "region": "us-west-2",
+  }}
+  ```
 
 ## 🎨 Custom Components
 
@@ -187,7 +277,7 @@ func (a *APILoader) Load(ctx context.Context, cfg cronyx.DataSourceConfig) (cron
 }
 
 // Register it
-engine.WithLoader("api", &APILoader{
+engine.RegisterLoader("api", &APILoader{
     BaseURL: "https://api.example.com",
     APIKey:  "your-api-key",
 })
@@ -205,7 +295,7 @@ func (s *SlackMessageOutput) Generate(ctx context.Context, rendered cronyx.Rende
     // Return cronyx.OutputFile with Slack-formatted content
 }
 
-engine.WithOutput("slack-message", &SlackMessageOutput{})
+engine.RegisterOutput("slack-message", &SlackMessageOutput{})
 ```
 
 ## 📝 Templates
@@ -234,7 +324,7 @@ Total records: {{len .Rows}}
 {{if eq .category "Electronics"}}
 {{$electronics = add $electronics .value}}
 {{else if eq .category "Clothing"}}  
- {{$clothing = add $clothing .value}}
+{{$clothing = add $clothing .value}}
 {{end}}
 {{end}}
 
@@ -260,20 +350,23 @@ fmt.Printf("Average duration: %v\n", metrics.AvgDuration)
 
 ```go
 func TestMyJob(t *testing.T) {
-    engine := cronyx.NewEngine().
-        WithLoader("csv", &loaders.CSVLoader{}).
-        WithRenderer("markdown", &renderers.MarkdownRenderer{}).
-        WithOutput("html", &outputs.FileOutputGenerator{OutDir: "/tmp"}).
-        WithDelivery("console", &delivery.ConsoleDelivery{})
+    engine := cronyx.NewEngine(1)
+    engine.RegisterLoader("csv", &loader.CSVLoader{})
+    engine.RegisterRenderer("markdown", &render.MarkdownRenderer{})
+    engine.RegisterOutput("html", &generate.FileOutputGenerator{OutDir: "/tmp"})
+    engine.RegisterDelivery("console", &deliver.ConsoleDelivery{})
 
-    job := cronyx.NewJob("Test Job").
-        WithTemplate("testdata/template.md").
-        WithCSVData("testdata/data.csv").
-        OutputHTML().
-        DeliverToConsole().
-        MustBuild() // Panics on error - good for tests
+    job := cronyx.ReportJob{
+        ID:           "test-job",
+        Name:         "Test Job",
+        TemplatePath: "testdata/template.md",
+        DataSource:   cronyx.DataSourceConfig{"type": "csv", "path": "testdata/data.csv"},
+        Outputs:      []string{"html"},
+        Delivery:     []cronyx.DeliveryConfig{{"type": "console"}},
+        Timeout:      30 * time.Second,
+    }
 
-    err := engine.ExecuteJob(context.Background(), job)
+    err := engine.TestExecute(context.Background(), job)
     assert.NoError(t, err)
 }
 ```
@@ -283,23 +376,24 @@ func TestMyJob(t *testing.T) {
 Cronyx provides typed errors for better error handling:
 
 ```go
-err := engine.ScheduleJob(job)
+err := engine.AddCronJob(job)
 if errors.Is(err, cronyx.ErrNoLoader) {
     log.Printf("Data loader not found: %v", err)
-} else if errors.Is(err, cronyx.ErrEmptySchedule) {
+} else if errors.Is(err, cronyx.ErrInvalidSchedule) {
     log.Printf("Invalid schedule: %v", err)
 }
 ```
 
 ## 🎯 Best Practices
 
-1. **Use the builder pattern** for creating jobs - it prevents common mistakes
+1. **Use descriptive job IDs and names** to make monitoring easier
 2. **Set appropriate timeouts** for jobs based on their complexity
 3. **Use labels** to organize and filter jobs
-4. **Test jobs individually** before scheduling them
+4. **Test jobs individually** with `TestExecute` before scheduling them
 5. **Monitor metrics** in production environments
 6. **Use structured logging** for better observability
 7. **Implement graceful shutdown** in your applications
+8. **Validate data source configurations** before creating jobs
 
 ## 🤝 Contributing
 
